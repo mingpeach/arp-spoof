@@ -137,9 +137,10 @@ int main(int argc, char *argv[])
 		reply_eth = (struct ether_header *)reply_packet;
 		if(reply_eth->ether_type != htons(ETHERTYPE_ARP)) continue;
 		
-		reply_arp = (struct arphdr_t *)(reply_packet + ETHER_HLEN);	
-		// error handling
-		
+		reply_arp = (struct arphdr_t *)(reply_packet + ETHER_HLEN);
+		if(reply_arp->ptype != htons(ETHERTYPE_IP)) continue;
+		if(reply_arp->oper != htons(ARP_REPLY)) continue;
+		if(reply_arp->spa != arpheader->tpa) continue;
 		memcpy(sender_mac, reply_arp->sha, 6);
 		break;
 	}
